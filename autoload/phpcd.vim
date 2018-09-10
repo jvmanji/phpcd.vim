@@ -207,16 +207,16 @@ function! phpcd#GetCurrentSymbolWithContext() " {{{
 		let end = 0
 	endif
 
-	while start >= 0 && line[start - 1] =~ '[\\a-zA-Z_0-9\x7f-\xff$]'
+	while start >= 0 && line[start - 1] =~ '[\\a-zA-Z_0-9\x7f-\xff\.$]'
 		let start -= 1
 	endwhile
-	while end + 1 <= len(line) && line[end + 1] =~ '[\\a-zA-Z_0-9\x7f-\xff$]'
+	while end + 1 <= len(line) && line[end + 1] =~ '[\\a-zA-Z_0-9\x7f-\xff\.$]'
 		let end += 1
 	endwhile
 	let word = line[start : end]
 	" trim extra non-word chars from the end line "(" that can come from a
 	" function call
-	let word = substitute(word, '\v\c[^\\a-zA-Z_0-9$]*$', '', '')
+	let word = substitute(word, '\v\c[^\\a-zA-Z_0-9\.$]*$', '', '')
 
 	let current_instruction = phpcd#GetCurrentInstruction(line('.'), max([0, col('.') - 2]), phpbegin)
 	let context = substitute(current_instruction, 'clone ', '', '')
@@ -224,7 +224,7 @@ function! phpcd#GetCurrentSymbolWithContext() " {{{
 	let context = substitute(context, 'yield ', '', '')
 	let context = substitute(context, 'return ', '', '')
 	let context = substitute(context, 'echo ', '', '')
-	let context = substitute(context, '\s*[$a-zA-Z_0-9\\\x7f-\xff]*$', '', '')
+	let context = substitute(context, '\s*[$a-zA-Z_0-9\\\x7f-\xff\.]*$', '', '')
 	let context = substitute(context, '\s\+\([\-:]\)', '\1', '')
 
 	if current_instruction[0:3] == 'use ' && word != '' && word[0] != '\'
@@ -242,6 +242,42 @@ function! phpcd#GetCurrentSymbolWithContext() " {{{
 	else
 		let [symbol, symbol_namespace] = [word, current_namespace]
 	endif
+
+ruby <<RUBY
+context = VIM::evaluate('context')
+symbol_namespace = VIM::evaluate('symbol_namespace')
+
+m = context.match(/\->get\('(.*)'\)\->/)
+
+sf = if File.exist? './app/console'
+  './app/console'
+else
+  './bin/console'
+end
+
+unless m.nil?
+	json  = `#{sf} debug:container #{m[1]} --format=json`
+  out   = JSON.parse(json)
+	parts = out['class'].split('\\')
+
+	context          = parts.pop
+	symbol_namespace = parts.join('\\')
+  VIM::command("let context = '#{context}::'")
+  VIM::command("let symbol_namespace = '#{symbol_namespace}'")
+else
+  if context == "'"
+    sym   = VIM::evaluate('symbol')
+    json  = `#{sf} debug:container #{sym} --format=json`
+    out   = JSON.parse(json)
+    parts = out['class'].split('\\')
+    symbol           = parts.pop
+    symbol_namespace = parts.join('\\')
+    VIM::command("let symbol = '#{symbol}'")
+    VIM::command("let context = 'new'")
+    VIM::command("let symbol_namespace = '#{symbol_namespace}'")
+  end
+end
+RUBY
 
 	return [symbol, context, symbol_namespace, current_imports]
 endfunction " }}}
