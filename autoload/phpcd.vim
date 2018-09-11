@@ -1,5 +1,61 @@
 let s:phpcd_path = expand('<sfile>:p:h:h') . '/php/main.php'
 
+ruby <<RUBY
+
+def cwd
+	VIM::evaluate('getcwd()')
+end
+
+def getSymbolUnderCursor
+	sym = VIM::evaluate('symbol')
+	m   = sym.match(/['"](.*)['"]/)
+
+	unless m.nil?
+		sym = m[1]
+	end
+	sym.gsub(/^@/, '')
+end
+
+def findSfConsole
+	if File.exist? './app/console'
+		'./app/console'
+	else
+		'./bin/console' if File.exists? './bin/console'
+	end
+end
+
+def parseDebugContainerOutput(json)
+	out   = JSON.parse(json)
+	parts = out['class'].split('\\')
+
+	[parts.pop, parts.join('\\')]
+end
+
+def findRoute(sym)
+	found = `rg --column 'name="#{sym}"' src/SocialScore/ApiBundle/Controller vendor/friendlyscore | head -1`
+	if found != ''
+		symbol_file, symbol_line, symbol_col, txt = found.split(':')
+		VIM::command("let symbol_file = '#{symbol_file}'")
+		VIM::command("let symbol_line = '#{symbol_line}'")
+		VIM::command("let symbol_col  = '#{symbol_col}'")
+		VIM::command("let already_found = v:true")
+	end
+	found
+end
+
+def findFile(sym)
+	found = `fd --type f '' #{cwd}/src #{cwd}/vendor/friendlyscore | grep -iE '#{sym.gsub(/\W/, '').split('').join('.*').downcase}' | sort | head -1`
+	if found != ''
+		VIM::command("let symbol_file = '#{found}'")
+		VIM::command("let symbol_line = 1")
+		VIM::command("let symbol_col  = 1")
+		VIM::command("let already_found = v:true")
+	end
+	found
+end
+
+RUBY
+
 function! phpcd#CompletePHP(findstart, base) " {{{
 	" we need to wait phpcd {{{
 	if !exists('g:phpcd_channel_id')
@@ -123,25 +179,33 @@ function! phpcd#CompleteGeneral(base, current_namespace, imports) " {{{
 				\ + rpc#request(g:phpcd_channel_id, 'info', '', pattern, 'both', 1)
 endfunction " }}}
 
+function! phpcd#IsPhpCode()
+	let pos = getpos('.')
+	let phpbegin = searchpairpos('<?', '', '?>', 'bWn',
+			\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\\|comment"')
+	let phpend = searchpairpos('<?', '', '?>', 'Wn',
+			\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\\|comment"')
+
+	if (phpbegin == [0, 0] && phpend == [0, 0])
+		return v:false
+	else
+		return v:true
+	endif
+endfunction
+
+
+
 function! phpcd#JumpToDefinition(mode) " {{{
 
 	let already_found = v:false
 
-	if !exists('g:phpcd_channel_id')
+	if !exists('g:phpcd_channel_id') || phpcd#IsPhpCode() == v:false
 		let symbol = expand("<cWORD>")
 ruby <<RUBY
-	sym   = VIM::evaluate('symbol')
-	m     = sym.match(/['"](.*)['"]/)
 
-	unless m.nil?
-		sym = m[1]
-	end
+	sym = getSymbolUnderCursor
 
-	sf = if File.exist? './app/console'
-		'./app/console'
-	else
-		'./bin/console' if File.exists? './bin/console'
-	end
+	sf = findSfConsole
 
 	found = if sf.nil?
 		''
@@ -150,15 +214,14 @@ ruby <<RUBY
 	end
 
 	if found != ''
-		out   = JSON.parse(found)
-		parts = out['class'].split('\\')
-
-		context          = parts.pop
-		symbol_namespace = parts.join('\\')
-
-		cwd = VIM::evaluate('getcwd()')
+		context, symbol_namespace = parseDebugContainerOutput found
 
 		founds = `rg --column 'class #{context}' #{cwd}`.split(/$/)
+		if founds.length == 0
+			puts "Searching for symbol in vendor dir – this may take a while"
+			founds = `rg --column 'class #{context}' #{cwd}/vendor/*`.split(/$/)
+			puts "FOUND! Hit enter to continue."
+		end
 
 		founds.each do |l|
 			fp,row,col,line = l.split(':')
@@ -170,21 +233,9 @@ ruby <<RUBY
 			end
 		end
 	else
-		found = `rg --column 'name="#{sym}"' src/SocialScore/ApiBundle/Controller vendor/friendlyscore | head -1`
-		if found != ''
-			symbol_file, symbol_line, symbol_col, txt = found.split(':')
-			VIM::command("let symbol_file = '#{symbol_file}'")
-			VIM::command("let symbol_line = '#{symbol_line}'")
-			VIM::command("let symbol_col  = '#{symbol_col}'")
-			VIM::command("let already_found = v:true")
-		else
-			found = `fd --type f | grep -E '#{sym.gsub(/\W/, '').split('').join('.*')}'`
-			if found != ''
-				VIM::command("let symbol_file = '#{found}'")
-				VIM::command("let symbol_line = 1")
-				VIM::command("let symbol_col  = 1")
-				VIM::command("let already_found = v:true")
-			end
+		found = findRoute(sym)
+		if found == ''
+			found = findFile(sym)
 		end
 	end
 RUBY
@@ -204,20 +255,11 @@ RUBY
 		if symbol_file == '' || symbol_file == v:false
 
 ruby <<RUBY
+	cwd   = VIM::evaluate('getcwd()')
 	sym   = VIM::evaluate('symbol')
-	found = `rg --column 'name="#{sym}"' src/SocialScore/ApiBundle/Controller vendor/friendlyscore | head -1`
-	if found != ''
-		symbol_file, symbol_line, symbol_col, txt = found.split(':')
-		VIM::command("let symbol_file = '#{symbol_file}'")
-		VIM::command("let symbol_line = '#{symbol_line}'")
-		VIM::command("let symbol_col  = '#{symbol_col}'")
-	else
-		found = `fd --type f | grep -E '#{sym.gsub(/\W/, '').split('').join('.*')}'`
-		if found != ''
-			VIM::command("let symbol_file = '#{found}'")
-			VIM::command("let symbol_line = 1")
-			VIM::command("let symbol_col  = 1")
-		end
+	found = findRoute(sym)
+	if found == ''
+		found = findFile(sym)
 	end
 RUBY
 
@@ -348,11 +390,7 @@ end
 unless m.nil?
 	json  = `#{sf} debug:container #{m[1]} --format=json`
 	if json != ''
-		out   = JSON.parse(json)
-		parts = out['class'].split('\\')
-
-		context          = parts.pop
-		symbol_namespace = parts.join('\\')
+		context, symbol_namespace = parseDebugContainerOutput json
 		VIM::command("let context = '#{context}::'")
 		VIM::command("let symbol_namespace = '#{symbol_namespace}'")
 	end
