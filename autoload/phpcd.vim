@@ -124,18 +124,108 @@ function! phpcd#CompleteGeneral(base, current_namespace, imports) " {{{
 endfunction " }}}
 
 function! phpcd#JumpToDefinition(mode) " {{{
+
+	let already_found = v:false
+
 	if !exists('g:phpcd_channel_id')
-		return
+		let symbol = expand("<cWORD>")
+ruby <<RUBY
+	sym   = VIM::evaluate('symbol')
+	m     = sym.match(/['"](.*)['"]/)
+
+	unless m.nil?
+		sym = m[1]
+	end
+
+	sf = if File.exist? './app/console'
+		'./app/console'
+	else
+		'./bin/console' if File.exists? './bin/console'
+	end
+
+	found = if sf.nil?
+		''
+	else
+		`#{sf} debug:container #{sym} --format=json`
+	end
+
+	if found != ''
+		out   = JSON.parse(found)
+		parts = out['class'].split('\\')
+
+		context          = parts.pop
+		symbol_namespace = parts.join('\\')
+
+		cwd = VIM::evaluate('getcwd()')
+
+		founds = `rg --column 'class #{context}' #{cwd}`.split(/$/)
+
+		founds.each do |l|
+			fp,row,col,line = l.split(':')
+			if line =~ /class #{context}$/ or line =~ /class #{context} /
+				VIM::command("let symbol_file = '#{fp}'")
+				VIM::command("let symbol_line = '#{row}'")
+				VIM::command("let symbol_col  = '#{col}'")
+				VIM::command("let already_found = v:true")
+			end
+		end
+	else
+		found = `rg --column 'name="#{sym}"' src/SocialScore/ApiBundle/Controller vendor/friendlyscore | head -1`
+		if found != ''
+			symbol_file, symbol_line, symbol_col, txt = found.split(':')
+			VIM::command("let symbol_file = '#{symbol_file}'")
+			VIM::command("let symbol_line = '#{symbol_line}'")
+			VIM::command("let symbol_col  = '#{symbol_col}'")
+			VIM::command("let already_found = v:true")
+		else
+			found = `fd --type f | grep -E '#{sym.gsub(/\W/, '').split('').join('.*')}'`
+			if found != ''
+				VIM::command("let symbol_file = '#{found}'")
+				VIM::command("let symbol_line = 1")
+				VIM::command("let symbol_col  = 1")
+				VIM::command("let already_found = v:true")
+			end
+		end
+	end
+RUBY
+		if already_found == v:false
+			return
+		endif
 	endif
 
-	let [symbol, symbol_context, symbol_namespace, current_imports] = phpcd#GetCurrentSymbolWithContext()
-	if symbol == ''
-		return
-	endif
+	if already_found == v:false
 
-	let [symbol_file, symbol_line, symbol_col] = phpcd#LocateSymbol(symbol, symbol_context, symbol_namespace, current_imports)
-	if symbol_file == '' || symbol_file == v:false
-		return
+		let [symbol, symbol_context, symbol_namespace, current_imports] = phpcd#GetCurrentSymbolWithContext()
+		if symbol == ''
+			return
+		endif
+
+		let [symbol_file, symbol_line, symbol_col] = phpcd#LocateSymbol(symbol, symbol_context, symbol_namespace, current_imports)
+		if symbol_file == '' || symbol_file == v:false
+
+ruby <<RUBY
+	sym   = VIM::evaluate('symbol')
+	found = `rg --column 'name="#{sym}"' src/SocialScore/ApiBundle/Controller vendor/friendlyscore | head -1`
+	if found != ''
+		symbol_file, symbol_line, symbol_col, txt = found.split(':')
+		VIM::command("let symbol_file = '#{symbol_file}'")
+		VIM::command("let symbol_line = '#{symbol_line}'")
+		VIM::command("let symbol_col  = '#{symbol_col}'")
+	else
+		found = `fd --type f | grep -E '#{sym.gsub(/\W/, '').split('').join('.*')}'`
+		if found != ''
+			VIM::command("let symbol_file = '#{found}'")
+			VIM::command("let symbol_line = 1")
+			VIM::command("let symbol_col  = 1")
+		end
+	end
+RUBY
+
+			if symbol_file == '' || symbol_file == v:false
+				return
+			endif
+		endif
+
 	endif
 
 	if a:mode == 'normal'
@@ -257,24 +347,28 @@ end
 
 unless m.nil?
 	json  = `#{sf} debug:container #{m[1]} --format=json`
-  out   = JSON.parse(json)
-	parts = out['class'].split('\\')
+	if json != ''
+		out   = JSON.parse(json)
+		parts = out['class'].split('\\')
 
-	context          = parts.pop
-	symbol_namespace = parts.join('\\')
-  VIM::command("let context = '#{context}::'")
-  VIM::command("let symbol_namespace = '#{symbol_namespace}'")
+		context          = parts.pop
+		symbol_namespace = parts.join('\\')
+		VIM::command("let context = '#{context}::'")
+		VIM::command("let symbol_namespace = '#{symbol_namespace}'")
+	end
 else
   if context == "'"
     sym   = VIM::evaluate('symbol')
     json  = `#{sf} debug:container #{sym} --format=json`
-    out   = JSON.parse(json)
-    parts = out['class'].split('\\')
-    symbol           = parts.pop
-    symbol_namespace = parts.join('\\')
-    VIM::command("let symbol = '#{symbol}'")
-    VIM::command("let context = 'new'")
-    VIM::command("let symbol_namespace = '#{symbol_namespace}'")
+		if json != ''
+			out              = JSON.parse(json)
+			parts            = out['class'].split('\\')
+			symbol           = parts.pop
+			symbol_namespace = parts.join('\\')
+			VIM::command("let symbol = '#{symbol}'")
+			VIM::command("let context = 'new'")
+			VIM::command("let symbol_namespace = '#{symbol_namespace}'")
+		end
   end
 end
 RUBY
